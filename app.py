@@ -1,3 +1,4 @@
+
 import geopandas as gpd
 import matplotlib.pyplot as plt
 from shapely.geometry import Polygon, MultiPolygon,LineString
@@ -47,13 +48,16 @@ def create_Area_geom(df):
             gdf = gdf.append({'geometry': polygon}, ignore_index=True)
         # convert the Polygon geometry to a GeoDataFrame
     gdf['geometry'] = gdf['geometry'].apply(lambda x: x if x.is_valid else Polygon(x).buffer(0))
+
     max_area = gdf['geometry'].area.idxmax()
     outer_ring = gdf.loc[max_area,'geometry']
     outer_ring = outer_ring.buffer(2)
+    outer_ring_simplify = outer_ring.simplify(0.1)
+
     #print(f"Outer: {outer_ring}")
    # print(f"Divide")
     
-    mask = gdf['geometry'].apply(lambda x: not x.within(outer_ring))
+    mask = gdf['geometry'].apply(lambda x: not x.within(outer_ring_simplify))
     print("Mask: " + str(mask))
     outside_shapes = gdf[mask]
     # Get only the polygon from the filtered GeoDataFrame
@@ -63,12 +67,12 @@ def create_Area_geom(df):
     
     # Access the first polygon
     # Simplify the polyggon(s)
-    simplified_polygons = outside_polygons['geometry'].apply(lambda x: x.simplify(0.1))
+    simplified_polygons = outside_polygons['geometry'].apply(lambda x: x.simplify(0.01))
 
     # Assign the simplified polyggon(s) back to the GeoDataFrame
     outside_polygons['geometry'] = simplified_polygons
     print(f"Outside Polys: {outside_polygons}")
-    ploys.append(outer_ring)
+    ploys.append(outer_ring_simplify)
     for item in range(len(outside_polygons)):
         outside_polygon = outside_polygons.loc[item, 'geometry']
         ploys.append(outside_polygon)
@@ -96,6 +100,14 @@ def construct_perimeter(df):
 
          gdf = gdf.append({'geometry': area}, ignore_index=True)
     return gdf
+
+def construct_concave_perimeter(df):
+    gdf = gpd.GeoDataFrame(columns=['geometry'])
+    concave = create_concave_perimeter(df)
+    for item in concave:
+        
+        gdf = gdf.append({'geometry': item}, ignore_index=True)
+    return gdf 
 
 def create_concave_perimeter(df):
     
@@ -128,20 +140,18 @@ def create_concave_perimeter(df):
                 newPoly = LineString([[p[0], p[1]] for p in hull.points[hull.vertices]])
                 poly_list.append(newPoly)
             
-    print(poly_list)
+    #print(poly_list)
 
-    gdf = gpd.GeoDataFrame(columns=['geometry'])
-    for item in poly_list:
-        
-        gdf = gdf.append({'geometry': item}, ignore_index=True)
-    return gdf
+    
+    return poly_list
 
 def create_Perimeter_geom(poly):
     poly_array = []
 
     for pol in poly['geometry']:
         exterior = pol.exterior
-        poly_array.append(exterior)
+        new_lineString = LineString(exterior)
+        poly_array.append(new_lineString)
     return poly_array
 
     
@@ -157,74 +167,83 @@ def CalcPerimeter(perimeter):
 
     return round(current_perimeter,2)
 
+def showVisuals(hour, concave_geom,area_geom,perimeter_geom, forest_geom):
+        fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(12, 4))
+        plt.title(hour)
+        perimeter_geom.plot(ax=ax1, cmap='viridis')
+        ax1.set_title("Perimeter Geom")
+        ax1.annotate(hour , xy=(0.5, 0.5), xycoords='axes fraction',
+                ha='center', va='center', size=12)
+        forest_geom.plot(ax=ax2)
+        ax2.set_title("Forest Interect")
+        
+        area_geom.plot(ax=ax3, cmap='viridis') 
+        #convex_hull_plot_2d(temp(group), ax=ax3)
+        ax3.set_title("Area Geom")
+        
+        concave_geom.plot(ax=ax4)
+        ax4.set_title("Concave Geom")
+        plt.show()
+
+def SaveResults(time_hour, concave_geom,area_geom,perimeter_geom, poly_hr_count):
+    
+    # Change the name of the column in each GeoDataFrame to avoid conflicts when concatenating
+    area_geom.rename(columns={'geometry': 'geometry1'}, inplace=True)
+    perimeter_geom.rename(columns={'geometry': 'geometry2'}, inplace=True)
+    concave_geom.rename(columns={'geometry': 'geometry3'}, inplace=True)
+
+
+    gdf_final = pd.concat([area_geom, perimeter_geom, concave_geom], axis=1)
+    gdf_final = gdf_final[['geometry1', 'geometry2', 'geometry3']]
+    # Rename the columns to match the desired header
+    gdf_final.rename(columns={'geometry1': 'area_geom', 'geometry2': 'perim_geom', 'geometry3': 'concave_perim_geom'}, inplace=True)
+
+    gdf_final['time_period'] = time_hour
+    gdf_final['Poly_hr_count'] = poly_hr_count
+    # Reorder the columns to match the desired header
+    gdf_final = gdf_final[['time_period','Poly_hr_count','area_geom','perim_geom', 'concave_perim_geom']]
+    print(gdf_final)
+    gdf_final.to_csv('data.csv', mode='w', header=True, index=True)
+  
 
 
 def Main():
-    Total_Hr = []
-    Total_Poly_hr = []
-    Total_area_geom = []
-    Total_perim_geom = []
-    Total_concave_geom = []
-
-    RESULTS = pd.DataFrame(columns=['time_period','Poly_hr_count','area_geom','perim_geom', 'concave_perim_geom'])
+    
+    
     output = create_temporal_output(ISOCHRONES)
-    
-    
-    for name, group in output:
-        outer_perimeter = create_concave_perimeter(group)
-        poly = construct_area(group)
-        perimeter_geom = construct_perimeter(poly)
-        forest_intersection = gpd.overlay(poly , FOREST_ISOCHRONES, how='intersection') 
-        grass_perimeter = CalcPerimeter(poly) - CalcPerimeter(forest_intersection)
-        
-        fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(12, 4))
-        plt.title(name)
-        perimeter_geom.plot(ax=ax1, cmap='viridis')
-        ax1.set_title("Perimeter Outline")
-        ax1.annotate(name , xy=(0.5, 0.5), xycoords='axes fraction',
-                ha='center', va='center', size=12)
-        forest_intersection.plot(ax=ax2)
-        ax2.set_title("Forest Interect")
-        ax2.annotate(f"Area: {CalcArea(forest_intersection.area)}, Perimeter: {CalcPerimeter(forest_intersection)}, Grass Perimeter: {grass_perimeter}", xy=(0.5, 0.5), xycoords='axes fraction',
-                ha='center', va='center', size=12)
-        poly.plot(ax=ax3, cmap='viridis') 
-        #convex_hull_plot_2d(temp(group), ax=ax3)
-        ax3.set_title("Area Polygon")
-        ax3.annotate(f"Area: {CalcArea(poly.area)}, Perimeter: {CalcPerimeter(poly)}", xy=(0.5, 0.5), xycoords='axes fraction',
-                ha='center', va='center', size=12)
-        outer_perimeter.plot(ax=ax4)
-        plt.show()
-        print('Areas: ' + str(CalcArea(poly.area)))
-        print('Perimeter: ' + str(CalcPerimeter(poly)))
+    gdf_area = gpd.GeoDataFrame(columns=['geometry'])
+    gdf_concave = gpd.GeoDataFrame(columns=['geometry'])
+    gdf_perimeter = gpd.GeoDataFrame(columns=['geometry'])
+    gdf_time_hour = gpd.GeoDataFrame(columns=['Interval'])
+    gdf_Poly_hour = gpd.GeoDataFrame(columns=['Poly_hr_count'])
+    for hour, group in output:
+        concave_perimeter = construct_concave_perimeter(group)
+        area_geom = construct_area(group)
+        print(area_geom)
+        perimeter_geom = construct_perimeter(area_geom)
+        forest_intersection = gpd.overlay(area_geom , FOREST_ISOCHRONES, how='intersection') 
+        showVisuals(hour,concave_perimeter,area_geom,perimeter_geom,forest_intersection)
         #['time_period','Poly_hr_count','area_geom','perim_geom','total_perimeter', 'total_area']
-        count = 1
-        print(group['geometry'])
+        poly_hr_count = 1
+        for idx, row in area_geom.iterrows():
+            gdf_area = gdf_area.append({'geometry': row['geometry']}, ignore_index=True)
+            gdf_time_hour = gdf_time_hour.append({'Interval': hour}, ignore_index=True)
+            gdf_Poly_hour = gdf_Poly_hour.append({'Poly_hr_count': poly_hr_count}, ignore_index=True)
+            poly_hr_count = poly_hr_count + 1
+        for idx, row in concave_perimeter.iterrows():
+            gdf_concave = gdf_concave.append({'geometry': row['geometry']}, ignore_index=True)
+        for idx, row in perimeter_geom.iterrows():
+            gdf_perimeter = gdf_perimeter.append({'geometry': row['geometry']}, ignore_index=True)
+
+    SaveResults(gdf_time_hour,gdf_concave,gdf_area,gdf_perimeter, gdf_Poly_hour)
         
-        for index, row in poly.iterrows():
-           # print("Area" + str(poi['geometry']))
-           Total_area_geom.append(row['geometry'])
-           Total_Poly_hr.append(count)
-           Total_Hr.append(name)
-           count = count + 1
-        for index, row in outer_perimeter.iterrows():
-            Total_concave_geom.append(row['geometry'])
-           
-        for index, row in perimeter_geom.iterrows():
-            Total_perim_geom.append(row['geometry'])
+
             
-    for item in range(len(Total_Hr)):
-        RESULTS = RESULTS.append({'time_period': Total_Hr[item], 'Poly_hr_count': Total_Poly_hr[item], 'area_geom': Total_area_geom[item],'perim_geom': Total_perim_geom[item], 'concave_perim_geom': Total_concave_geom[item] },ignore_index=True)    
+    
 
         
 
-    RESULTS.to_csv('results1.csv')
+   
 
-   # ISOCHRONES['geometry'].plot()
-   # output.plot()
-    #single_fire_summary.plot()
-   # plt.show()
-    #single_fire_summary.to_file('concave_hull03.shp')
-
-
-
-Main()
+if __name__ == "__main__": 
+    Main()
